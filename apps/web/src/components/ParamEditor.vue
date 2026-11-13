@@ -32,7 +32,7 @@ function add() {
         <label v-else-if="param.type !== 'password'">默认值
           <input :value="param.default" @input="param.default = ($event.target as HTMLInputElement).value || undefined" />
         </label>
-        <p v-else>密文状态：未保存</p>
+        <p v-else>保存参数定义后，可在下方设置密码。</p>
         <label>传参方式
           <select v-model="param.cli.mode"><option>arg</option><option>env</option><option>flag</option></select>
         </label>

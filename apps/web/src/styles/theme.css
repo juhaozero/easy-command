@@ -1,0 +1,66 @@
+:root {
+  color-scheme: light;
+  --app-font: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --app-mono: Consolas, "Cascadia Mono", "Sarasa Mono SC", monospace;
+  --app-bg: #f2f5f4;
+  --app-sidebar: #e7eeec;
+  --app-surface: #ffffff;
+  --app-panel: #eef3f1;
+  --app-text: #152c29;
+  --app-strong: #0f221f;
+  --app-muted: #5a736e;
+  --app-border: #cedbd7;
+  --app-frame: #9cb6ae;
+  --app-accent: #195b51;
+  --app-accent-hover: #144a42;
+  --app-accent-soft: #d7ebe5;
+  --app-focus-border: #5f8f85;
+  --app-on-accent: #ffffff;
+  --app-danger: #952b2b;
+  --app-error-bg: #fff2f2;
+  --app-error-border: #e8c4c4;
+  --app-ok: #195b51;
+  --app-ok-bg: #e5f2ee;
+  --app-warning: #8a5a22;
+  --app-switch-off: #b7c9c4;
+  --app-radius: 16px;
+  --app-radius-control: 10px;
+  --app-shadow: 0 3px 12px rgb(21 44 41 / 5%);
+  --app-focus: 0 0 0 2px rgb(25 91 81 / 22%);
+  --app-transition: 180ms ease;
+  --app-overlay: rgb(19 43 39 / 50%);
+  --app-control-h: 40px;
+  --app-font-size: 14px;
+  --app-font-title: 20px;
+  --app-font-hint: 12px;
+  --app-sidebar-w: 188px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --app-bg: #15221f;
+    --app-sidebar: #121c1a;
+    --app-surface: #1c2b27;
+    --app-panel: #243632;
+    --app-text: #dce8e4;
+    --app-strong: #eef5f2;
+    --app-muted: #9bb0aa;
+    --app-border: #334842;
+    --app-frame: #4d6660;
+    --app-accent: #5fafa0;
+    --app-accent-hover: #7bc2b5;
+    --app-accent-soft: #2a4540;
+    --app-focus-border: #6fb5a8;
+    --app-on-accent: #0f221f;
+    --app-danger: #f0a0a0;
+    --app-error-bg: #3a2828;
+    --app-error-border: #6e4545;
+    --app-ok: #7bc2b5;
+    --app-ok-bg: #243f39;
+    --app-warning: #dfbd87;
+    --app-switch-off: #405550;
+    --app-shadow: 0 3px 12px rgb(0 0 0 / 18%);
+    --app-overlay: rgb(6 12 11 / 62%);
+  }
+}

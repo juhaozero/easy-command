@@ -10,6 +10,7 @@ export interface ParamDef {
   required: boolean
   default?: string | number | boolean
   passwordStored?: boolean
+  updatedAt?: string
   secretBinding?: string
   maskInLog: boolean
   cli: { mode: 'arg' | 'env' | 'flag'; envName?: string; flag?: string }

@@ -17,16 +17,16 @@
 
 ## 步骤总览
 
-| 步 | 目标 | 产出物 | 验收标准 |
-| --- | --- | --- | --- |
-| **1** | 空壳可跑 | Vue + Vite + Tauri 2 工程；Hello 窗口；目录约定；docs 入库 | `tauri dev` 出窗；无 Sidecar 也可显示占位 UI |
-| **2** | Sidecar 骨架 + JSONL | Go module；hello / ping / shutdown；Rust spawn + 壳级 Job；崩溃重启；stdout 协议独占 | 双向 ping；杀引擎自动拉起；退出无僵尸；非协议 stdout 报 PROTOCOL_ERROR 不崩溃 |
-| **3** | JSON 存储 + 脚本库 MVP | 导入复制、冲突策略、meta CRUD（含 `dangerous`）、库内编辑 | 导入 bat 可见可改可删；`dangerous` 可读写；原子写不腐 |
-| **4** | 执行引擎 + 流式输出 | bat/cmd、sh/bash、`runId`/`script.cancel`、执行级 Job、危险确认入口 | 实时输出；取消杀进程树；无 Bash 明确错误；dangerous 二次确认 |
-| **5** | 历史 + 日志保留 + 脱敏 | RunRecord、按日 log、保留策略 | password 日志为 `***`；改保留策略后清理符合预期 |
-| **6** | DPAPI 密码参数 | secret.set、执行前解密、引导文案 | 换用户无法解密；JSON 中无明文 |
-| **7** | 调度 + 快捷键 + 选中态 | Go sched；`hotkey.trigger` / `tray.runLast`；ui_state 仅 Go | 三种规则可触发；快捷键/托盘不经 Rust 缓存；失效错误码 |
-| **8** | 托盘 + 引导 + 打包更新 | 关窗托盘、菜单、onboarding、installer、updater 配置 | 可分发安装包；检查更新链路打通（可用 test endpoint） |
+| 步    | 目标                   | 产出物                                                                               | 验收标准                                                                      |
+| ----- | ---------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| **1** | 空壳可跑               | Vue + Vite + Tauri 2 工程；Hello 窗口；目录约定；docs 入库                           | `tauri dev` 出窗；无 Sidecar 也可显示占位 UI                                  |
+| **2** | Sidecar 骨架 + JSONL   | Go module；hello / ping / shutdown；Rust spawn + 壳级 Job；崩溃重启；stdout 协议独占 | 双向 ping；杀引擎自动拉起；退出无僵尸；非协议 stdout 报 PROTOCOL_ERROR 不崩溃 |
+| **3** | JSON 存储 + 脚本库 MVP | 导入复制、冲突策略、meta CRUD（含 `dangerous`）、库内编辑                            | 导入 bat 可见可改可删；`dangerous` 可读写；原子写不腐                         |
+| **4** | 执行引擎 + 流式输出    | bat/cmd、sh/bash、`runId`/`script.cancel`、执行级 Job、危险确认入口                  | 实时输出；取消杀进程树；无 Bash 明确错误；dangerous 二次确认                  |
+| **5** | 历史 + 日志保留 + 脱敏 | RunRecord、按日 log、保留策略                                                        | password 日志为 `***`；改保留策略后清理符合预期                               |
+| **6** | DPAPI 密码参数         | secret.set、执行前解密、引导文案                                                     | 换用户无法解密；JSON 中无明文                                                 |
+| **7** | 调度 + 快捷键 + 选中态 | Go sched；`hotkey.trigger` / `tray.runLast`；ui_state 仅 Go                          | 三种规则可触发；快捷键/托盘不经 Rust 缓存；失效错误码                         |
+| **8** | 托盘 + 引导 + 打包更新 | 关窗托盘、菜单、onboarding、installer、updater 配置                                  | 可分发安装包；检查更新链路打通（可用 test endpoint）                          |
 
 ---
 
@@ -194,17 +194,17 @@
 
 ## 已选定默认（实现时沿用，变更需改架构文档）
 
-| 项 | 默认 |
-| --- | --- |
-| DPAPI | Go Sidecar |
-| 调度器 | Go Sidecar |
-| 全局快捷键 | Tauri 注册；选中/最近 ID 仅 Go + ui_state |
-| 取消进程树 | Go 执行级 Job + TerminateJobObject |
-| AppData 目录 | `%APPDATA%\easy-command` |
-| 包 ID（暂定） | `com.easycommand.app` |
-| 同名冲突 | UI 选择重命名 / 覆盖 / 取消 |
-| 并行执行 | 允许；UI 先单会话 |
-| 退出策略 | shutdown 后最多等待 N 秒再强杀 |
+| 项            | 默认                                      |
+| ------------- | ----------------------------------------- |
+| DPAPI         | Go Sidecar                                |
+| 调度器        | Go Sidecar                                |
+| 全局快捷键    | Tauri 注册；选中/最近 ID 仅 Go + ui_state |
+| 取消进程树    | Go 执行级 Job + TerminateJobObject        |
+| AppData 目录  | `%APPDATA%\easy-command`                  |
+| 包 ID（暂定） | `com.easycommand.app`                     |
+| 同名冲突      | UI 选择重命名 / 覆盖 / 取消               |
+| 并行执行      | 允许；UI 先单会话                         |
+| 退出策略      | shutdown 后最多等待 N 秒再强杀            |
 
 ---
 
@@ -227,5 +227,3 @@
 - [x] `docs/ARCHITECTURE.md` 初稿
 - [x] `docs/DEV_PLAN.md` 初稿
 - [x] 根 `README.md` 指向文档
-
-下一步进入 **步骤 1：空壳可跑**（需另行启动实现任务）。

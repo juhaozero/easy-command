@@ -17,7 +17,7 @@ use windows_sys::Win32::{
         JobObjects::{
             CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
             TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_BREAKAWAY_OK, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         },
         Pipes::CreatePipe,
         Threading::{
@@ -121,7 +121,8 @@ fn kill_on_close_job() -> io::Result<OwnedHandle> {
     }
     let job = unsafe { OwnedHandle::from_raw_handle(raw) };
     let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    limits.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     check(unsafe {
         SetInformationJobObject(
             job.as_raw_handle(),

@@ -29,7 +29,39 @@ const RUNNING: u8 = 0;
 const EXITING: u8 = 1;
 const EXIT_READY: u8 = 2;
 
-type Reply = Result<Value, String>;
+type Reply = Result<Value, RequestError>;
+
+pub struct RequestError {
+    pub code: String,
+    pub message: String,
+    pub details: Value,
+}
+
+impl From<String> for RequestError {
+    fn from(message: String) -> Self {
+        Self {
+            code: String::new(),
+            message,
+            details: Value::Null,
+        }
+    }
+}
+
+impl From<&str> for RequestError {
+    fn from(message: &str) -> Self {
+        message.to_owned().into()
+    }
+}
+
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.code.is_empty() {
+            f.write_str(&self.message)
+        } else {
+            write!(f, "{}：{}", self.code, self.message)
+        }
+    }
+}
 
 struct Request {
     action: &'static str,
@@ -106,7 +138,13 @@ impl Engine {
         self.shared.status.lock().unwrap().clone()
     }
 
-    pub async fn request(&self, action: &'static str, payload: Value) -> Reply {
+    pub async fn request(&self, action: &'static str, payload: Value) -> Result<Value, String> {
+        self.request_with_details(action, payload)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    pub async fn request_with_details(&self, action: &'static str, payload: Value) -> Reply {
         let id = Uuid::new_v4();
         let line = encode_request(id, action, payload)?;
         let (reply, result) = mpsc::sync_channel(1);
@@ -121,7 +159,7 @@ impl Engine {
         tauri::async_runtime::spawn_blocking(move || {
             result
                 .recv_timeout(Duration::from_secs(7))
-                .map_err(|_| "引擎未响应".to_string())?
+                .map_err(|_| RequestError::from("引擎未响应"))?
         })
         .await
         .map_err(|error| error.to_string())?
@@ -129,6 +167,10 @@ impl Engine {
 
     pub fn exit_ready(&self) -> bool {
         self.shared.exit.load(Ordering::Acquire) == EXIT_READY
+    }
+
+    pub fn is_exiting(&self) -> bool {
+        self.shared.exiting()
     }
 
     pub fn begin_exit(&self, app: AppHandle) {
@@ -149,6 +191,26 @@ impl Engine {
             shared.exit.store(EXIT_READY, Ordering::Release);
             app.exit(0);
         });
+    }
+
+    // The Windows updater exits the process directly after launching the installer.
+    // Its hook must finish Sidecar shutdown synchronously before returning.
+    pub fn stop_for_update(&self) {
+        if self
+            .shared
+            .exit
+            .compare_exchange(RUNNING, EXITING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            if let Some(worker) = self.worker.lock().unwrap().take() {
+                let _ = worker.join();
+            }
+            self.shared.exit.store(EXIT_READY, Ordering::Release);
+        } else {
+            while !self.exit_ready() {
+                thread::sleep(Duration::from_millis(20));
+            }
+        }
     }
 }
 
@@ -389,6 +451,7 @@ impl Session<'_> {
                 v: 1,
                 event,
                 payload,
+                ..
             } if event == "system.hello" && self.ready_at.is_none() => {
                 match serde_json::from_value::<Hello>(payload) {
                     Ok(hello)
@@ -409,14 +472,46 @@ impl Session<'_> {
                             Some(hello),
                             None,
                         );
+                        crate::hotkey::refresh(self.app.clone());
+                        crate::tray::refresh_schedule(self.app.clone());
+                        crate::updater::on_engine_ready(self.app.clone());
                     }
                     _ => warn(self.app, "system.hello 的 version 或 dataDir 无效", false),
                 }
             }
             Incoming::Evt {
                 v: 1,
+                request_id: None,
                 event,
                 payload,
+            } if event == "system.log" && payload["code"] == "SETTINGS_CHANGED" => {
+                if payload["scope"] == "schedule" {
+                    crate::tray::refresh_schedule(self.app.clone());
+                } else {
+                    crate::hotkey::refresh(self.app.clone());
+                }
+            }
+            Incoming::Evt {
+                v: 1,
+                request_id: None,
+                event,
+                payload,
+            } if event == "sched.fired" => {
+                if payload["dangerous"] == true {
+                    crate::hotkey::notify(self.app, "已执行危险脚本");
+                }
+                let _ = self.app.emit(
+                    "engine://evt",
+                    json!({
+                        "v":1,"type":"evt","event":event,"payload":payload
+                    }),
+                );
+            }
+            Incoming::Evt {
+                v: 1,
+                event,
+                payload,
+                ..
             } if event == "system.protocol_error" => {
                 if let (Some("PROTOCOL_ERROR"), Some(message), Some(truncated)) = (
                     payload["code"].as_str(),
@@ -427,6 +522,26 @@ impl Session<'_> {
                 } else {
                     warn(self.app, "system.protocol_error 载荷无效", false);
                 }
+            }
+            Incoming::Evt {
+                v: 1,
+                request_id,
+                event,
+                payload,
+            } if matches!(
+                event.as_str(),
+                "exec.started" | "exec.stdout" | "exec.stderr" | "exec.exit" | "system.log"
+            ) && payload["runId"]
+                .as_str()
+                .is_some_and(|id| Uuid::parse_str(id).is_ok()) =>
+            {
+                let _ = self.app.emit(
+                    "engine://evt",
+                    json!({
+                        "v": 1, "type": "evt", "requestId": request_id,
+                        "event": event, "payload": payload,
+                    }),
+                );
             }
             Incoming::Res {
                 v: 1,
@@ -452,14 +567,27 @@ impl Session<'_> {
                         Ok(payload)
                     }
                     (true, Some(payload), None)
-                        if pending.action.starts_with("script.") && payload.is_object() =>
+                        if (pending.action.starts_with("script.")
+                            || pending.action.starts_with("bash.")
+                            || pending.action.starts_with("history.")
+                            || pending.action.starts_with("settings.")
+                            || pending.action.starts_with("secret.")
+                            || pending.action.starts_with("sched.")
+                            || pending.action.starts_with("ui.")
+                            || pending.action.starts_with("hotkey.")
+                            || pending.action == "tray.runLast")
+                            && payload.is_object() =>
                     {
                         Ok(payload)
                     }
                     (false, None, Some(error))
                         if !error.code.is_empty() && error.details.is_object() =>
                     {
-                        Err(format!("{}：{}", error.code, error.message))
+                        Err(RequestError {
+                            code: error.code,
+                            message: error.message,
+                            details: error.details,
+                        })
                     }
                     _ => {
                         warn(self.app, "响应载荷与请求不匹配", false);

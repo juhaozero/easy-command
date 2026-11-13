@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,11 +14,12 @@ import (
 
 func TestAtomicWriteSurvivesProcessDeath(t *testing.T) {
 	if path := os.Getenv("EASY_COMMAND_ATOMIC_TEST_PATH"); path != "" {
-		err := atomicWrite(path, func(file *os.File) error {
-			if _, err := file.WriteString(`{"half":`); err != nil {
-				return err
-			}
-			if err := file.Sync(); err != nil {
+		s, err := Open(filepath.Dir(filepath.Dir(path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.Rewrite(path, func(file io.Writer) error {
+			if _, err := io.WriteString(file, `{"half":`); err != nil {
 				return err
 			}
 			if err := os.WriteFile(path+".ready", nil, 0600); err != nil {
@@ -33,8 +35,8 @@ func TestAtomicWriteSurvivesProcessDeath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "config", "test.json")
-	if err := s.WriteJSON(path, map[string]int{"before": 1}); err != nil {
+	path := filepath.Join(root, "history", "runs.jsonl")
+	if err := s.Write(path, []byte("{\"before\":1}\n{\"before\":2}\n")); err != nil {
 		t.Fatal(err)
 	}
 	old, err := os.ReadFile(path)
@@ -64,10 +66,17 @@ func TestAtomicWriteSurvivesProcessDeath(t *testing.T) {
 		t.Fatal("child should have been killed")
 	}
 	got, err := os.ReadFile(path)
-	if err != nil || !json.Valid(got) || !bytes.Equal(old, got) {
+	if err != nil || !bytes.Equal(old, got) {
 		t.Fatalf("invalid committed JSON %q: %v", got, err)
 	}
-	if err := s.WriteJSON(path, map[string]int{"after": 2}); err != nil {
+	for _, line := range bytes.Split(bytes.TrimSpace(got), []byte{'\n'}) {
+		if !json.Valid(line) {
+			t.Fatalf("invalid history line: %q", line)
+		}
+	}
+	if err := s.Rewrite(path, func(w io.Writer) error {
+		return json.NewEncoder(w).Encode(map[string]int{"after": 2})
+	}); err != nil {
 		t.Fatal(err)
 	}
 	var updated map[string]int

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"easy-command/sidecar/internal/secret"
 )
 
 type CLI struct {
@@ -19,7 +21,8 @@ type Param struct {
 	Type           string          `json:"type"`
 	Required       bool            `json:"required"`
 	Default        json.RawMessage `json:"default,omitempty"`
-	PasswordStored bool            `json:"passwordStored"`
+	PasswordStored *bool           `json:"passwordStored,omitempty"`
+	UpdatedAt      string          `json:"updatedAt,omitempty"`
 	SecretBinding  string          `json:"secretBinding,omitempty"`
 	MaskInLog      bool            `json:"maskInLog"`
 	CLI            CLI             `json:"cli"`
@@ -42,6 +45,7 @@ type Meta struct {
 	Kind      string `json:"kind"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
+	secrets   []secret.Entry
 }
 
 type Summary struct {
@@ -97,7 +101,8 @@ func (f *Fields) validate() error {
 		default:
 			return fail("INVALID_PARAM", "未知参数类型")
 		}
-		p.PasswordStored = false
+		p.PasswordStored = nil
+		p.UpdatedAt = ""
 		switch p.CLI.Mode {
 		case "arg":
 		case "env":

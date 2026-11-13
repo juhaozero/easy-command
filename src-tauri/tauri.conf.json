@@ -18,7 +18,24 @@
     ]
   },
   "bundle": {
-    "active": false,
-    "externalBin": ["binaries/easy-command-engine"]
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/easy-command-engine"],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEwNTZFMkYxMUY2Mzk2NzYKUldSMmxtTWY4ZUpXRUFzb0I3NWJkVlN3VHRTcUEwL05JSWorL2JJMEZsWUkvdFdXNUVPSVpTZWoK",
+      "endpoints": ["https://github.com/juhaozero/easy-command/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

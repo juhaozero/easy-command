@@ -41,7 +41,7 @@ func Open(db *store.Store) (*Library, error) {
 	return l, nil
 }
 
-func newID() (string, error) {
+func NewID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
@@ -62,6 +62,31 @@ func validID(id string) bool {
 
 func (l *Library) dir(id string) string { return l.db.Path("library", "scripts", id) }
 
+func (l *Library) Exists(id string) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, err := l.meta(id)
+	var failure *Error
+	if errors.As(err, &failure) && failure.Code == "NOT_FOUND" {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (l *Library) Executable(id string) (Meta, string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	meta, err := l.meta(id)
+	if err != nil {
+		return meta, "", err
+	}
+	if !meta.Enabled {
+		return meta, "", fail("SCRIPT_DISABLED", "脚本已禁用")
+	}
+	path := filepath.Join(l.dir(id), meta.FileName)
+	return meta, path, store.CheckPath(path)
+}
+
 func (l *Library) meta(id string) (Meta, error) {
 	var m Meta
 	if !validID(id) {
@@ -76,15 +101,19 @@ func (l *Library) meta(id string) (Meta, error) {
 		}
 		return m, err
 	}
-	if err := l.db.ReadJSON(filepath.Join(l.dir(id), "meta.json"), &m); err != nil {
+	var disk storedMeta
+	if err := l.db.ReadJSON(filepath.Join(l.dir(id), "meta.json"), &disk); err != nil {
 		return m, err
 	}
+	m = disk.Meta
+	m.secrets = disk.Secrets
 	if m.ID != id || (m.Kind != "bat" && m.Kind != "sh") || m.FileName != "script."+m.Kind {
 		return m, errors.New("invalid stored script metadata")
 	}
 	if m.Params == nil {
 		m.Params = []Param{}
 	}
+	m.applyPasswordStatus()
 	return m, nil
 }
 
@@ -213,7 +242,7 @@ func (l *Library) Import(source, policy string) (Meta, error) {
 	id := conflict
 	created := now
 	if id == "" {
-		id, err = newID()
+		id, err = NewID()
 		if err != nil {
 			return m, err
 		}
@@ -272,8 +301,22 @@ func (l *Library) UpdateMeta(id string, fields Fields) (Meta, bool, error) {
 		return m, false, fail("INVALID_PARAM", "脚本名称已存在")
 	}
 	m.Fields = fields
+	bindings := make(map[string]bool)
+	for _, p := range m.Params {
+		if p.Type == "password" {
+			bindings[binding(p)] = true
+		}
+	}
+	kept := m.secrets[:0]
+	for _, entry := range m.secrets {
+		if bindings[entry.Key] {
+			kept = append(kept, entry)
+		}
+	}
+	m.secrets = kept
+	m.applyPasswordStatus()
 	m.UpdatedAt = timestamp()
-	if err := l.db.WriteJSON(filepath.Join(l.dir(id), "meta.json"), m); err != nil {
+	if err := l.writeMeta(l.dir(id), m); err != nil {
 		return m, false, err
 	}
 	var selected bool
@@ -345,7 +388,7 @@ func (l *Library) publish(m Meta, data []byte, overwrite bool) error {
 	if err := l.db.Write(filepath.Join(stage, m.FileName), data); err != nil {
 		return err
 	}
-	if err := l.db.WriteJSON(filepath.Join(stage, "meta.json"), m); err != nil {
+	if err := l.writeMeta(stage, m); err != nil {
 		return err
 	}
 	target := l.dir(m.ID)

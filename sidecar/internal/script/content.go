@@ -80,7 +80,7 @@ func (l *Library) UpdateContent(id string, part []byte, offset int, revision, up
 		if len(l.uploads) >= 8 && u == nil {
 			return "", 0, nil, fail("INVALID_PARAM", "并行上传过多，请稍后重试")
 		}
-		token, err := newID()
+		token, err := NewID()
 		if err != nil {
 			return "", 0, nil, err
 		}

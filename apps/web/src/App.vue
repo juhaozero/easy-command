@@ -1,7 +1,40 @@
 <script setup lang="ts">
-import { onMounted, ref, toRaw } from 'vue'
+import { computed, onMounted, onUnmounted, ref, toRaw } from 'vue'
+import { listen } from '@tauri-apps/api/event'
+import { automation } from './api/automation'
+import { desktop } from './api/desktop'
 import { scripts, type ConflictPolicy, type ScriptFields, type ScriptMeta, type ScriptSummary } from './api/scripts'
+import { engine, type EngineStatus } from './engine'
 import ParamEditor from './components/ParamEditor.vue'
+import ExecutionPanel from './components/ExecutionPanel.vue'
+import HistoryPage from './components/HistoryPage.vue'
+import RetentionSettings from './components/RetentionSettings.vue'
+import PasswordEditor from './components/PasswordEditor.vue'
+import DpapiNotice from './components/DpapiNotice.vue'
+import SchedulePage from './components/SchedulePage.vue'
+import HotkeySettings from './components/HotkeySettings.vue'
+import NavIcon from './components/NavIcon.vue'
+import OnboardingPage from './components/OnboardingPage.vue'
+import DesktopSettings from './components/DesktopSettings.vue'
+
+type PageId = 'library' | 'history' | 'settings' | 'schedule'
+
+const NAV_ITEMS: ReadonlyArray<{ id: PageId; label: string; icon: 'library' | 'history' | 'schedule' | 'settings' }> = [
+  { id: 'library', label: '脚本库', icon: 'library' },
+  { id: 'history', label: '执行历史', icon: 'history' },
+  { id: 'schedule', label: '调度', icon: 'schedule' },
+  { id: 'settings', label: '设置', icon: 'settings' },
+]
+
+const PAGE_META: Record<PageId, { title: string; kicker: string; subtle: string }> = {
+  library: { title: '脚本库', kicker: 'LIBRARY', subtle: '导入、编辑并运行本地脚本' },
+  history: { title: '执行历史', kicker: 'HISTORY', subtle: '查看运行记录与日志' },
+  schedule: { title: '调度', kicker: 'SCHEDULE', subtle: '定时与间隔规则仅在应用运行时生效' },
+  settings: { title: '设置', kicker: 'PREFERENCES', subtle: '日志保留、快捷键与安全说明' },
+}
+
+const page = ref<PageId>('library')
+const pageMeta = computed(() => PAGE_META[page.value])
 
 const rows = ref<ScriptSummary[]>([])
 const next = ref<string | null>(null)
@@ -18,6 +51,14 @@ const policy = ref<ConflictPolicy>('cancel')
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
+const automationNotice = ref('')
+let stopNotice: (() => void) | undefined
+let stopEngine: (() => void) | undefined
+let disposed = false
+const engineStatus = ref<EngineStatus>()
+const onboardingCompleted = ref<boolean>()
+const startupError = ref('')
+let readingSettings = false
 
 async function work(action: () => Promise<void>) {
   if (busy.value) return
@@ -34,9 +75,9 @@ async function work(action: () => Promise<void>) {
 }
 
 async function load(append = false) {
-  const page = await scripts.list(append ? next.value ?? undefined : undefined)
-  rows.value = append ? [...rows.value, ...page.scripts] : page.scripts
-  next.value = page.nextAfterId
+  const result = await scripts.list(append ? next.value ?? undefined : undefined)
+  rows.value = append ? [...rows.value, ...result.scripts] : result.scripts
+  next.value = result.nextAfterId
 }
 
 function fields(meta: ScriptMeta): ScriptFields {
@@ -44,8 +85,9 @@ function fields(meta: ScriptMeta): ScriptFields {
   return structuredClone({ name, description, enabled, dangerous, workingDir, params, tags })
 }
 
-async function open(id: string) {
+async function open(id: string, reportSelection = true) {
   const detail = await scripts.get(id)
+  if (reportSelection) await automation.select(id)
   current.value = detail.meta
   draft.value = fields(detail.meta)
   tags.value = (detail.meta.tags ?? []).join(', ')
@@ -69,7 +111,7 @@ async function saveMeta() {
   await scripts.updateMeta(id, update)
   await load()
   const unsaved = text.value !== originalText.value ? text.value : undefined
-  await open(id)
+  await open(id, false)
   if (unsaved !== undefined) text.value = unsaved
   notice.value = '已保存元数据'
 }
@@ -101,128 +143,256 @@ async function remove() {
   notice.value = '已删除脚本'
 }
 
-onMounted(() => work(load))
+function passwordChanged(id: string, key: string, updatedAt?: string) {
+  if (current.value?.id !== id) return
+  const changed = current.value.params.find((param) => param.key === key)
+  // Existing definitions may explicitly share a secret binding.
+  const binding = changed?.secretBinding || key
+  for (const param of current.value.params) {
+    if (param.type === 'password' && (param.secretBinding || param.key) === binding) {
+      param.passwordStored = updatedAt !== undefined
+      param.updatedAt = updatedAt
+    }
+  }
+}
+
+async function finishOnboarding(importedId?: string) {
+  onboardingCompleted.value = true
+  await work(async () => {
+    await load()
+    if (importedId) {
+      await open(importedId)
+      return
+    }
+    const { lastSelectedScriptId } = await automation.state()
+    if (lastSelectedScriptId) await open(lastSelectedScriptId, false)
+  })
+}
+
+async function readOnboarding() {
+  if (readingSettings || onboardingCompleted.value !== undefined || engineStatus.value?.phase !== 'ready') return
+  readingSettings = true
+  startupError.value = ''
+  try {
+    const settings = await desktop.settings()
+    if (disposed) return
+    if (settings.onboardingCompleted) await finishOnboarding()
+    else onboardingCompleted.value = false
+  } catch (failure) {
+    startupError.value = String(failure)
+  } finally {
+    readingSettings = false
+  }
+}
+
+function onEngine(status: EngineStatus) {
+  if (disposed || (engineStatus.value && status.revision <= engineStatus.value.revision)) return
+  engineStatus.value = status
+  if (status.phase === 'ready') void readOnboarding()
+}
+
+onMounted(async () => {
+  void listen<string>('automation://notice', ({ payload }) => { automationNotice.value = payload })
+    .then((stop) => { if (disposed) stop(); else stopNotice = stop })
+    .catch(() => {})
+  try {
+    const stop = await engine.onStatus(onEngine)
+    if (disposed) { stop(); return }
+    stopEngine = stop
+    onEngine(await engine.status())
+  } catch (failure) {
+    startupError.value = String(failure)
+  }
+})
+onUnmounted(() => {
+  disposed = true
+  stopNotice?.()
+  stopEngine?.()
+})
 </script>
 
 <template>
-  <main>
-    <header class="toolbar">
-      <h1>脚本库</h1>
-      <div>
-        <button :disabled="busy" @click="work(load)">刷新</button>
-        <button class="primary" :disabled="busy" @click="sourcePath = ''; policy = 'cancel'; importDialog?.showModal()">导入脚本</button>
+  <OnboardingPage v-if="onboardingCompleted === false" :engine-status="engineStatus" @completed="finishOnboarding" />
+  <main v-else-if="onboardingCompleted === undefined" class="onboarding-loading">
+    <section class="panel">
+      <h1>Easy Command</h1>
+      <p role="status">{{ engineStatus?.phase === 'ready' ? '正在读取设置' : engineStatus?.message ?? '正在启动执行引擎' }}</p>
+      <p v-if="startupError" class="error" role="alert">{{ startupError }}</p>
+      <button v-if="startupError && engineStatus?.phase === 'ready'" type="button" @click="readOnboarding">重试</button>
+    </section>
+  </main>
+  <div v-else class="app-shell">
+    <aside class="app-sidebar" aria-label="主导航">
+      <div class="app-brand">
+        <div class="app-brand-icon">
+          <NavIcon name="app" />
+        </div>
+        <div class="app-brand-copy">
+          <strong>Easy Command</strong>
+          <span>本地脚本，一键就位。</span>
+        </div>
       </div>
-    </header>
-    <p v-if="error && !importDialog?.open && !deleteDialog?.open" class="error" role="alert">{{ error }}</p>
-    <p v-if="notice" role="status">{{ notice }}</p>
-    <div class="layout">
-      <aside aria-label="脚本列表">
-        <p v-if="!rows.length">库中暂无脚本。</p>
+      <nav class="app-nav">
         <button
-          v-for="row in rows" :key="row.id" type="button" class="item"
-          :aria-pressed="current?.id === row.id" :disabled="busy"
-          @click="work(() => open(row.id))"
+          v-for="item in NAV_ITEMS"
+          :key="item.id"
+          type="button"
+          class="app-nav-item"
+          :class="{ 'is-active': page === item.id }"
+          :aria-current="page === item.id ? 'page' : undefined"
+          @click="page = item.id"
         >
-          <strong>{{ row.name }}</strong>
-          <small>{{ row.enabled ? '已启用' : '已禁用' }}{{ row.dangerous ? ' · 危险脚本' : '' }}</small>
+          <NavIcon :name="item.icon" />
+          <span>{{ item.label }}</span>
         </button>
-        <button v-if="next" :disabled="busy" @click="work(() => load(true))">加载更多</button>
-      </aside>
-      <section v-if="current && draft" aria-label="脚本详情">
-        <header class="toolbar">
-          <h2>{{ current.name }}</h2>
-          <button class="danger" :disabled="busy" @click="deleteDialog?.showModal()">删除脚本</button>
-        </header>
-        <form @submit.prevent="work(saveMeta)">
-          <div class="fields">
-            <label>名称 <input v-model="draft.name" required /></label>
-            <label>工作目录 <input v-model="draft.workingDir" /></label>
-            <label>说明 <input v-model="draft.description" /></label>
-            <label>标签（逗号分隔） <input v-model="tags" /></label>
+      </nav>
+      <div class="app-sidebar-note">
+        <span>本地脚本工作台</span>
+        <small>Easy Command</small>
+      </div>
+    </aside>
+
+    <div class="app-main">
+      <header class="app-main-header">
+        <div>
+          <span class="app-page-kicker">EASY COMMAND / {{ pageMeta.kicker }}</span>
+          <h1>{{ pageMeta.title }}</h1>
+          <p class="app-subtle">{{ pageMeta.subtle }}</p>
+        </div>
+        <div v-if="page === 'library'" class="app-main-actions">
+          <button type="button" :disabled="busy" @click="work(load)">刷新</button>
+          <button
+            type="button"
+            class="primary"
+            :disabled="busy"
+            @click="sourcePath = ''; policy = 'cancel'; importDialog?.showModal()"
+          >
+            导入脚本
+          </button>
+        </div>
+      </header>
+
+      <div class="app-content">
+        <p v-if="automationNotice" class="app-toast" role="status">{{ automationNotice }}</p>
+
+        <div v-show="page === 'library'">
+          <p
+            v-if="error && !importDialog?.open && !deleteDialog?.open"
+            class="app-toast is-error"
+            role="alert"
+          >
+            {{ error }}
+          </p>
+          <p v-if="notice" class="app-toast is-ok" role="status">{{ notice }}</p>
+
+          <div class="library-layout">
+            <aside class="script-list" aria-label="脚本列表">
+              <p v-if="!rows.length">库中暂无脚本。</p>
+              <button
+                v-for="row in rows"
+                :key="row.id"
+                type="button"
+                class="item"
+                :aria-pressed="current?.id === row.id"
+                :disabled="busy"
+                @click="work(() => open(row.id, row.enabled))"
+              >
+                <strong>{{ row.name }}</strong>
+                <small>{{ row.enabled ? '已启用' : '已禁用' }}{{ row.dangerous ? ' · 危险脚本' : '' }}</small>
+              </button>
+              <button v-if="next" type="button" :disabled="busy" @click="work(() => load(true))">加载更多</button>
+            </aside>
+
+            <div class="library-detail">
+              <section v-if="current && draft" class="panel" aria-label="脚本详情">
+                <header class="toolbar">
+                  <h2>{{ current.name }}</h2>
+                  <button type="button" class="danger" :disabled="busy" @click="deleteDialog?.showModal()">删除脚本</button>
+                </header>
+                <form @submit.prevent="work(saveMeta)">
+                  <div class="fields">
+                    <label>名称 <input v-model="draft.name" required /></label>
+                    <label>工作目录 <input v-model="draft.workingDir" /></label>
+                    <label>说明 <input v-model="draft.description" /></label>
+                    <label>标签（逗号分隔） <input v-model="tags" /></label>
+                  </div>
+                  <label class="check"><input v-model="draft.enabled" type="checkbox" /> 启用</label>
+                  <label class="check"><input v-model="draft.dangerous" type="checkbox" /> 标记为危险脚本</label>
+                  <ParamEditor v-model="draft.params" />
+                  <button class="primary" :disabled="busy" type="submit">保存元数据</button>
+                </form>
+                <fieldset v-if="current.params.some((param) => param.type === 'password')">
+                  <legend>密码参数</legend>
+                  <PasswordEditor
+                    v-for="param in current.params.filter((param) => param.type === 'password')"
+                    :key="current.id + ':' + param.key"
+                    :script-id="current.id"
+                    :param="param"
+                    :disabled="busy"
+                    @changed="passwordChanged"
+                  />
+                </fieldset>
+                <form @submit.prevent="work(saveContent)">
+                  <label v-if="text !== null">脚本正文
+                    <textarea v-model="text" rows="10" spellcheck="false"></textarea>
+                  </label>
+                  <p v-else>正文使用非 UTF-8 编码，本步保留原始文件。</p>
+                  <button v-if="text !== null" :disabled="busy || text === originalText" type="submit">保存正文</button>
+                </form>
+              </section>
+              <section v-else class="panel" aria-label="脚本详情">
+                <p>选择脚本查看或编辑。</p>
+              </section>
+              <ExecutionPanel v-if="current" :script="current" />
+            </div>
           </div>
-          <label class="check"><input v-model="draft.enabled" type="checkbox" /> 启用</label>
-          <label class="check"><input v-model="draft.dangerous" type="checkbox" /> 标记为危险脚本</label>
-          <ParamEditor v-model="draft.params" />
-          <button class="primary" :disabled="busy" type="submit">保存元数据</button>
-        </form>
-        <form @submit.prevent="work(saveContent)">
-          <label v-if="text !== null">脚本正文
-            <textarea v-model="text" rows="10" spellcheck="false"></textarea>
-          </label>
-          <p v-else>正文使用非 UTF-8 编码，本步保留原始文件。</p>
-          <button v-if="text !== null" :disabled="busy || text === originalText" type="submit">保存正文</button>
-        </form>
-      </section>
-      <section v-else aria-label="脚本详情"><p>选择脚本查看或编辑。</p></section>
+
+          <dialog ref="importDialog" @cancel.prevent="!busy && importDialog?.close()">
+            <form @submit.prevent="work(importFile)">
+              <h2>导入脚本</h2>
+              <label>源文件绝对路径 <input v-model="sourcePath" required placeholder="C:\scripts\example.bat" /></label>
+              <label>遇到同名脚本
+                <select v-model="policy">
+                  <option value="cancel">取消导入</option>
+                  <option value="rename">重命名新脚本</option>
+                  <option value="overwrite">覆盖脚本及元数据</option>
+                </select>
+              </label>
+              <p v-if="error" class="error" role="alert">{{ error }}</p>
+              <div class="toolbar">
+                <button type="button" :disabled="busy" @click="importDialog?.close(); error = ''">关闭</button>
+                <button class="primary" type="submit" :disabled="busy">导入</button>
+              </div>
+            </form>
+          </dialog>
+
+          <dialog ref="deleteDialog" @cancel.prevent="!busy && deleteDialog?.close()">
+            <form @submit.prevent="work(remove)">
+              <h2>删除脚本</h2>
+              <p>删除库内的「{{ current?.name }}」及其元数据？</p>
+              <p v-if="error" class="error" role="alert">{{ error }}</p>
+              <div class="toolbar">
+                <button type="button" :disabled="busy" @click="deleteDialog?.close(); error = ''">取消</button>
+                <button class="danger" type="submit" :disabled="busy">确认删除</button>
+              </div>
+            </form>
+          </dialog>
+        </div>
+
+        <HistoryPage v-if="page === 'history'" />
+        <SchedulePage v-if="page === 'schedule'" />
+        <div v-if="page === 'settings'" class="settings-stack">
+          <DesktopSettings />
+          <RetentionSettings />
+          <HotkeySettings />
+          <section><DpapiNotice /></section>
+        </div>
+      </div>
     </div>
 
-    <dialog ref="importDialog" @cancel.prevent="!busy && importDialog?.close()">
-      <form @submit.prevent="work(importFile)">
-        <h2>导入脚本</h2>
-        <label>源文件绝对路径 <input v-model="sourcePath" required placeholder="C:\scripts\example.bat" /></label>
-        <label>遇到同名脚本
-          <select v-model="policy">
-            <option value="cancel">取消导入</option>
-            <option value="rename">重命名新脚本</option>
-            <option value="overwrite">覆盖脚本及元数据</option>
-          </select>
-        </label>
-        <p v-if="error" class="error" role="alert">{{ error }}</p>
-        <div class="toolbar">
-          <button type="button" :disabled="busy" @click="importDialog?.close(); error = ''">关闭</button>
-          <button class="primary" type="submit" :disabled="busy">导入</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog ref="deleteDialog" @cancel.prevent="!busy && deleteDialog?.close()">
-      <form @submit.prevent="work(remove)">
-        <h2>删除脚本</h2>
-        <p>删除库内的「{{ current?.name }}」及其元数据？</p>
-        <p v-if="error" class="error" role="alert">{{ error }}</p>
-        <div class="toolbar">
-          <button type="button" :disabled="busy" @click="deleteDialog?.close(); error = ''">取消</button>
-          <button class="danger" type="submit" :disabled="busy">确认删除</button>
-        </div>
-      </form>
-    </dialog>
-  </main>
+  </div>
 </template>
 
-<style>
-:root {
-  font-family: 'Microsoft YaHei UI', system-ui, sans-serif;
-  color: #152c29;
-  background: #f2f5f4;
-}
-body { margin: 0; }
-main { max-width: 70rem; margin: auto; padding: 1.25rem; }
-h1, h2 { margin: 0; }
-h1 { font-size: 1.55rem; }
-h2 { font-size: 1.15rem; overflow-wrap: anywhere; }
-.toolbar, .fields { display: flex; align-items: center; gap: .65rem; }
-.toolbar { justify-content: space-between; }
-.toolbar > div { display: flex; gap: .5rem; }
-.layout { display: grid; grid-template-columns: minmax(9rem, 1fr) minmax(0, 3fr); gap: 1rem; margin-top: 1rem; }
-aside, section, dialog { background: white; border: 1px solid #cedbd7; border-radius: .5rem; padding: 1rem; }
-.item { display: grid; gap: .25rem; width: 100%; margin-bottom: .45rem; text-align: left; overflow-wrap: anywhere; }
-.item[aria-pressed="true"] { background: #d7ebe5; border-color: #286e63; }
-.fields { flex-wrap: wrap; align-items: stretch; }
-.fields > label { flex: 1 1 10rem; min-width: 0; }
-.fields input, .fields select { min-width: 0; box-sizing: border-box; width: 100%; }
-form { display: grid; gap: .65rem; margin-top: 1rem; }
-label { display: grid; gap: .3rem; }
-.check { display: flex; align-items: center; gap: .35rem; margin: .25rem 0; }
-button, input, select, textarea { font: inherit; color: inherit; border: 1px solid #9cb6ae; border-radius: .3rem; padding: .4rem .6rem; }
-button { background: #f2f5f4; cursor: pointer; }
-button:disabled { opacity: .55; cursor: default; }
-.primary { background: #195b51; color: white; }
-.danger, .error { color: #952b2b; }
-.error { overflow-wrap: anywhere; }
-textarea { font-family: Consolas, monospace; resize: vertical; }
-fieldset { min-width: 0; border: 1px solid #cedbd7; }
-fieldset fieldset { margin-bottom: .6rem; }
-dialog { width: min(28rem, calc(100% - 4rem)); }
-dialog::backdrop { background: #132b2780; }
-@media (max-width: 570px) { .layout { grid-template-columns: 1fr; } }
+<style scoped>
+.onboarding-loading { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
 </style>

@@ -10,6 +10,8 @@ const MAX_LINE: usize = 1 << 20;
 pub(super) enum Incoming {
     Evt {
         v: u32,
+        #[serde(rename = "requestId")]
+        request_id: Option<Uuid>,
         event: String,
         payload: Value,
     },

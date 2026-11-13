@@ -1,0 +1,24 @@
+{
+  "productName": "Easy Command",
+  "identifier": "com.easycommand.app",
+  "build": {
+    "beforeDevCommand": "pnpm --filter @easy-command/web dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm --filter @easy-command/web build",
+    "frontendDist": "../apps/web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Easy Command",
+        "width": 800,
+        "height": 520
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "externalBin": ["binaries/easy-command-engine"]
+  }
+}

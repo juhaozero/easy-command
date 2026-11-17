@@ -49,6 +49,16 @@ func routeScript(l *script.Library, req request) (any, error) {
 		}
 		m, err := l.Import(p.SourcePath, p.ConflictPolicy)
 		return map[string]any{"meta": m}, err
+	case "script.importDir":
+		var p struct {
+			SourceDir      string `json:"sourceDir"`
+			ConflictPolicy string `json:"conflictPolicy"`
+		}
+		if decode(req.Payload, &p) != nil {
+			return nil, invalid
+		}
+		result, err := l.ImportDir(p.SourceDir, p.ConflictPolicy)
+		return result, err
 	case "script.updateMeta":
 		var p struct {
 			ScriptID string         `json:"scriptId"`

@@ -179,3 +179,78 @@ func TestOpenRecoversInterruptedReplaceAndDelete(t *testing.T) {
 		t.Fatalf("trash still present: %v", err)
 	}
 }
+
+func TestFieldsValidatePresetsRequireChoices(t *testing.T) {
+	fields := Fields{
+		Name:    "demo.bat",
+		Enabled: true,
+		Params: []Param{{
+			Key: "action", Label: "动作", Type: "string", Required: true,
+			CLI: CLI{Mode: "arg"},
+			Choices: []Choice{{Label: "列出", Value: "list"}, {Label: "切换", Value: "use"}},
+		}},
+		Presets: []Preset{{
+			ID: "p1", Name: "列出版本", Values: map[string]string{"action": "list"},
+		}},
+		DefaultPresetID: "p1",
+	}
+	if err := fields.validate(); err != nil {
+		t.Fatal(err)
+	}
+	fields.Presets[0].Values["action"] = "other"
+	if err := fields.validate(); err == nil {
+		t.Fatal("expected invalid choice to fail")
+	}
+}
+
+func TestImportDirLoadsBatAndSh(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"one.bat":     "@echo one\r\n",
+		"two.sh":      "echo two\n",
+		"skip.txt":    "ignore",
+		"nested.bat":  "@echo nested\r\n",
+	} {
+		if name == "nested.bat" {
+			sub := filepath.Join(dir, "sub")
+			if err := os.Mkdir(sub, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sub, name), []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := lib.Import(filepath.Join(dir, "one.bat"), "cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := lib.ImportDir(dir, "cancel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Imported) != 1 || result.Imported[0].Name != "two.sh" {
+		t.Fatalf("imported=%+v", result.Imported)
+	}
+	if len(result.Skipped) != 1 || result.Skipped[0].Code != "CONFLICT_CANCELLED" {
+		t.Fatalf("skipped=%+v", result.Skipped)
+	}
+	if len(result.Failed) != 0 {
+		t.Fatalf("failed=%+v", result.Failed)
+	}
+	if first.ID == result.Imported[0].ID {
+		t.Fatal("folder import reused existing id")
+	}
+}

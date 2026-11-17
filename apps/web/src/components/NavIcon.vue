@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{
-  name: 'app' | 'library' | 'history' | 'schedule' | 'settings'
+  name: 'app' | 'library' | 'history' | 'schedule' | 'settings' | 'mock'
 }>()
 </script>
 
@@ -58,6 +58,20 @@ defineProps<{
   >
     <rect x="3.5" y="5" width="17" height="15" rx="2.5" />
     <path d="M8 3.5v3M16 3.5v3M3.5 9.5h17M8 13h.5M12 13h.5M16 13h.5M8 16.5h.5M12 16.5h.5" />
+  </svg>
+  <svg
+    v-else-if="name === 'mock'"
+    class="app-nav-icon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.65"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+    <path d="M8 9h8M8 12.5h5M8 16h3" />
   </svg>
   <svg
     v-else

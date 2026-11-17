@@ -274,6 +274,78 @@ func (l *Library) Import(source, policy string) (Meta, error) {
 	return m, l.rebuild()
 }
 
+// FolderIssue records a path that was skipped or failed during directory import.
+type FolderIssue struct {
+	Path    string `json:"path"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+// FolderImport is the summary of importing every .bat/.sh directly under a folder.
+type FolderImport struct {
+	Imported []Meta        `json:"imported"`
+	Skipped  []FolderIssue `json:"skipped"`
+	Failed   []FolderIssue `json:"failed"`
+}
+
+func (l *Library) ImportDir(dir, policy string) (FolderImport, error) {
+	var out FolderImport
+	out.Imported = []Meta{}
+	out.Skipped = []FolderIssue{}
+	out.Failed = []FolderIssue{}
+	if !filepath.IsAbs(dir) || (policy != "rename" && policy != "overwrite" && policy != "cancel") {
+		return out, fail("INVALID_PARAM", "请选择绝对路径文件夹及有效冲突策略")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, fail("NOT_FOUND", "文件夹不存在")
+		}
+		return out, err
+	}
+	if !info.IsDir() {
+		return out, fail("INVALID_PARAM", "源路径必须指向文件夹")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if ext != ".bat" && ext != ".sh" {
+			continue
+		}
+		paths = append(paths, filepath.Join(dir, entry.Name()))
+	}
+	sort.Strings(paths)
+	if len(paths) == 0 {
+		return out, fail("NOT_FOUND", "该文件夹下没有 .bat 或 .sh 脚本")
+	}
+	for _, path := range paths {
+		meta, err := l.Import(path, policy)
+		if err == nil {
+			out.Imported = append(out.Imported, meta)
+			continue
+		}
+		var known *Error
+		if errors.As(err, &known) {
+			issue := FolderIssue{Path: path, Code: known.Code, Message: known.Message}
+			if known.Code == "CONFLICT_CANCELLED" {
+				out.Skipped = append(out.Skipped, issue)
+			} else {
+				out.Failed = append(out.Failed, issue)
+			}
+			continue
+		}
+		out.Failed = append(out.Failed, FolderIssue{Path: path, Message: err.Error()})
+	}
+	return out, nil
+}
+
 func findName(items []Summary, name string) string {
 	for _, item := range items {
 		if strings.EqualFold(item.Name, name) {

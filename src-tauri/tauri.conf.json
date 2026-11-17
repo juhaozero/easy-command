@@ -19,13 +19,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "msi"],
     "icon": ["icons/icon.ico"],
     "externalBin": ["binaries/easy-command-engine"],
-    "createUpdaterArtifacts": true,
+    "createUpdaterArtifacts": false,
+    "publisher": "Easy Command",
+    "shortDescription": "Windows 本地脚本工作台",
+    "longDescription": "Windows 本地脚本工作台。支持脚本库、执行历史、调度与快捷键。",
+    "copyright": "Copyright © 2026",
+    "category": "Utility",
     "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true
+      },
+      "wix": {
+        "language": "zh-CN"
       }
     }
   },

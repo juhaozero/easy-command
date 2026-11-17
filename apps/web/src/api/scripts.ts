@@ -3,17 +3,30 @@ import { invoke } from '@tauri-apps/api/core'
 export type ConflictPolicy = 'rename' | 'overwrite' | 'cancel'
 export type ParamType = 'string' | 'number' | 'boolean' | 'password' | 'file' | 'dir'
 
+export interface ParamChoice {
+  label: string
+  value: string
+}
+
 export interface ParamDef {
   key: string
   label: string
   type: ParamType
   required: boolean
   default?: string | number | boolean
+  choices?: ParamChoice[]
   passwordStored?: boolean
   updatedAt?: string
   secretBinding?: string
   maskInLog: boolean
   cli: { mode: 'arg' | 'env' | 'flag'; envName?: string; flag?: string }
+}
+
+export interface ScriptPreset {
+  id: string
+  name: string
+  description?: string
+  values: Record<string, string>
 }
 
 export interface ScriptFields {
@@ -24,6 +37,8 @@ export interface ScriptFields {
   workingDir?: string
   tags?: string[]
   params: ParamDef[]
+  presets?: ScriptPreset[]
+  defaultPresetId?: string
 }
 
 export interface ScriptSummary {
@@ -61,10 +76,40 @@ function toBase64(bytes: Uint8Array) {
   return btoa(binary)
 }
 
+export function presetValuesToArgs(
+  params: ParamDef[],
+  values: Record<string, string>,
+): Record<string, string | number | boolean | null> {
+  const args: Record<string, string | number | boolean | null> = Object.create(null)
+  for (const param of params) {
+    if (param.type === 'password') continue
+    const raw = values[param.key]
+    if (raw === undefined || raw === '') {
+      args[param.key] = null
+      continue
+    }
+    if (param.type === 'number') {
+      const number = Number(raw)
+      args[param.key] = Number.isFinite(number) ? number : null
+    } else if (param.type === 'boolean') {
+      args[param.key] = raw === 'true'
+    } else {
+      args[param.key] = raw
+    }
+  }
+  return args
+}
+
 export const scripts = {
   list: (afterId?: string) => invoke<ScriptPage>('script_list', { afterId }),
   import: (sourcePath: string, conflictPolicy: ConflictPolicy) =>
     invoke<{ meta: ScriptMeta }>('script_import', { sourcePath, conflictPolicy }),
+  importDir: (sourceDir: string, conflictPolicy: ConflictPolicy) =>
+    invoke<{
+      imported: ScriptMeta[]
+      skipped: Array<{ path: string; code?: string; message: string }>
+      failed: Array<{ path: string; code?: string; message: string }>
+    }>('script_import_dir', { sourceDir, conflictPolicy }),
   updateMeta: (scriptId: string, meta: ScriptFields) =>
     invoke<{ meta: ScriptMeta; selectionInvalidated: boolean }>('script_update_meta', { scriptId, meta }),
   delete: (scriptId: string) =>

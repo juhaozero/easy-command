@@ -2,5 +2,9 @@
   "identifier": "main",
   "description": "Allow the debug panel to subscribe to Rust events",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "dialog:default"
+  ]
 }

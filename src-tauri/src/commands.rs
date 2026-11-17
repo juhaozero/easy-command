@@ -235,6 +235,20 @@ pub async fn script_import(
 }
 
 #[tauri::command]
+pub async fn script_import_dir(
+    engine: State<'_, Engine>,
+    source_dir: String,
+    conflict_policy: String,
+) -> Result<Value, String> {
+    engine
+        .request(
+            "script.importDir",
+            serde_json::json!({ "sourceDir": source_dir, "conflictPolicy": conflict_policy }),
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn script_update_meta(
     engine: State<'_, Engine>,
     script_id: String,

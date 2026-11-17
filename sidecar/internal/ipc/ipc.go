@@ -198,7 +198,7 @@ func route(req request, library *script.Library, exec execution, records *histor
 		ok = true
 		response.Payload = struct{}{}
 		return response, true
-	case "script.list", "script.get", "script.import", "script.updateMeta", "script.updateContent", "script.delete":
+	case "script.list", "script.get", "script.import", "script.importDir", "script.updateMeta", "script.updateContent", "script.delete":
 		if library == nil {
 			response.Error = &protocolError{"IO_ERROR", "script library unavailable", struct{}{}}
 			break

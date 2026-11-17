@@ -2,11 +2,11 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { execution, type FinalStatus, type RunArgs, type RunEvent } from '../api/execution'
 import { engine } from '../engine'
-import type { ScriptMeta } from '../api/scripts'
-import RunParameters from './RunParameters.vue'
+import { presetValuesToArgs, type ScriptMeta } from '../api/scripts'
 
 const props = defineProps<{ script: ScriptMeta }>()
 const values = ref<RunArgs>(Object.create(null))
+const presetId = ref('')
 const confirmRun = ref<HTMLDialogElement>()
 const runId = ref('')
 const runningName = ref('')
@@ -25,6 +25,10 @@ const connected = ref(false)
 const ready = ref(false)
 const cancelling = ref(false)
 const active = computed(() => phase.value === 'starting' || phase.value === 'running')
+const presets = computed(() => props.script.presets ?? [])
+const hasParams = computed(() => props.script.params.some((param) => param.type !== 'password'))
+const hasPresets = computed(() => presets.value.length > 0)
+const selectedPreset = computed(() => presets.value.find((item) => item.id === presetId.value))
 let buffered: RunEvent[] = []
 let masked: string[] = []
 let disposed = false
@@ -33,13 +37,32 @@ const maxLog = 2 * 1024 * 1024
 let logSize = 0
 let engineRevision = -1
 
-watch(() => props.script, () => {
-  const next: RunArgs = Object.create(null)
-  for (const param of props.script.params) {
-    if (param.type !== 'password') next[param.key] = param.default ?? null
+function applyPreset(id?: string) {
+  const list = presets.value
+  const chosen = list.find((item) => item.id === (id || presetId.value))
+    ?? list.find((item) => item.id === props.script.defaultPresetId)
+    ?? list[0]
+  presetId.value = chosen?.id ?? ''
+  if (!chosen) {
+    const next: RunArgs = Object.create(null)
+    for (const param of props.script.params) {
+      if (param.type !== 'password') next[param.key] = param.default ?? null
+    }
+    values.value = next
+    return
   }
-  values.value = next
+  values.value = presetValuesToArgs(props.script.params, chosen.values)
+}
+
+watch(() => props.script, () => {
+  applyPreset(props.script.defaultPresetId)
 }, { immediate: true })
+
+watch(presetId, (id) => {
+  if (!id) return
+  const chosen = presets.value.find((item) => item.id === id)
+  if (chosen) values.value = presetValuesToArgs(props.script.params, chosen.values)
+})
 
 const preview = computed(() => {
   const args: string[] = []
@@ -62,6 +85,20 @@ const preview = computed(() => {
     }
   }
   return [...environment, props.script.kind === 'bat' ? 'cmd.exe /d /v:off /s /c' : 'bash.exe', props.script.fileName, ...args].join(' ')
+})
+
+const summary = computed(() => {
+  if (!hasParams.value) return '无需参数，直接运行。'
+  if (!selectedPreset.value) return '请先在脚本库配置中新增方案。'
+  return props.script.params
+    .filter((param) => param.type !== 'password')
+    .map((param) => {
+      const raw = selectedPreset.value!.values[param.key]
+      if (!raw) return `${param.label}：—`
+      const label = param.choices?.find((choice) => choice.value === raw)?.label ?? raw
+      return `${param.label}：${label}`
+    })
+    .join(' · ')
 })
 
 function accept(event: RunEvent) {
@@ -93,6 +130,10 @@ function accept(event: RunEvent) {
 async function start() {
   confirmRun.value?.close()
   if (active.value || !connected.value || !ready.value || !props.script.enabled) return
+  if (hasParams.value && !hasPresets.value) {
+    error.value = '请先在脚本库配置中新增运行方案'
+    return
+  }
   error.value = ''
   historyWarning.value = ''
   runId.value = ''
@@ -181,13 +222,45 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section aria-label="执行台">
-    <h2>执行台 · {{ script.name }}</h2>
+  <section aria-label="运行台">
+    <h2>运行台 · {{ script.name }}</h2>
     <form @submit.prevent="ask">
-      <RunParameters v-model="values" :params="script.params" :disabled="active" />
+      <div v-if="hasParams" class="preset-row">
+        <label class="preset-label">
+          运行方案
+          <select v-model="presetId" :disabled="active || !hasPresets">
+            <option v-if="!hasPresets" value="" disabled>暂无方案，请到脚本库配置新增</option>
+            <option v-for="item in presets" :key="item.id" :value="item.id">
+              {{ item.name }}{{ item.id === script.defaultPresetId ? '（默认）' : '' }}
+            </option>
+          </select>
+        </label>
+        <button
+          class="primary run-btn"
+          type="submit"
+          :disabled="active || !connected || !ready || !script.enabled || !hasPresets"
+        >
+          运行
+        </button>
+      </div>
+      <div v-else class="preset-row">
+        <p class="preset-empty">无参数脚本，可直接运行。</p>
+        <button
+          class="primary run-btn"
+          type="submit"
+          :disabled="active || !connected || !ready || !script.enabled"
+        >
+          运行
+        </button>
+      </div>
+
+      <p v-if="hasParams && !hasPresets" class="hint">
+        还没有运行方案。请切换到「脚本库配置」添加参数选项并新增方案。
+      </p>
+      <p v-if="selectedPreset" class="hint">{{ selectedPreset.description || summary }}</p>
+      <p v-else-if="hasPresets" class="summary">{{ summary }}</p>
       <div>命令预览 <code>{{ preview }}</code></div>
       <div class="toolbar">
-        <button class="primary" type="submit" :disabled="active || !connected || !ready || !script.enabled">运行</button>
         <button type="button" :disabled="phase !== 'running' || cancelling" @click="cancel">取消执行</button>
       </div>
     </form>
@@ -219,6 +292,23 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.65rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+.preset-label { display: grid; gap: 0.35rem; min-width: 0; }
+.preset-label select { width: 100%; min-height: var(--app-control-h); }
+.preset-empty { margin: 0; color: var(--app-muted); align-self: center; }
+.run-btn {
+  min-width: 6.5rem;
+  min-height: 2.75rem;
+  font-weight: 650;
+}
+.hint, .summary { margin: 0 0 0.55rem; color: var(--app-muted); font-size: var(--app-font-hint); }
+.summary { color: var(--app-strong); font-weight: 500; }
 .run-log {
   min-height: 7rem;
   max-height: 20rem;
@@ -232,4 +322,8 @@ onUnmounted(() => {
 }
 .stderr { color: var(--app-danger); }
 code { overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .preset-row { grid-template-columns: 1fr; }
+  .run-btn { width: 100%; }
+}
 </style>

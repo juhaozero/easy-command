@@ -38,6 +38,7 @@ fn main() {
             commands::script_list,
             commands::script_get,
             commands::script_import,
+            commands::script_import_dir,
             commands::script_update_meta,
             commands::script_update_content,
             commands::script_delete,

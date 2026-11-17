@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, toRaw } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { automation } from './api/automation'
 import { desktop } from './api/desktop'
+import { pickScriptFiles, pickScriptFolder } from './api/dialog'
 import { scripts, type ConflictPolicy, type ScriptFields, type ScriptMeta, type ScriptSummary } from './api/scripts'
 import { engine, type EngineStatus } from './engine'
 import ParamEditor from './components/ParamEditor.vue'
@@ -16,8 +17,10 @@ import HotkeySettings from './components/HotkeySettings.vue'
 import NavIcon from './components/NavIcon.vue'
 import OnboardingPage from './components/OnboardingPage.vue'
 import DesktopSettings from './components/DesktopSettings.vue'
+import PresetEditor from './components/PresetEditor.vue'
 
 type PageId = 'library' | 'history' | 'settings' | 'schedule'
+type LibraryPane = 'run' | 'config'
 
 const NAV_ITEMS: ReadonlyArray<{ id: PageId; label: string; icon: 'library' | 'history' | 'schedule' | 'settings' }> = [
   { id: 'library', label: '脚本库', icon: 'library' },
@@ -27,13 +30,14 @@ const NAV_ITEMS: ReadonlyArray<{ id: PageId; label: string; icon: 'library' | 'h
 ]
 
 const PAGE_META: Record<PageId, { title: string; kicker: string; subtle: string }> = {
-  library: { title: '脚本库', kicker: 'LIBRARY', subtle: '导入、编辑并运行本地脚本' },
+  library: { title: '脚本库', kicker: 'LIBRARY', subtle: '运行台选方案 · 脚本库配置管参数与方案' },
   history: { title: '执行历史', kicker: 'HISTORY', subtle: '查看运行记录与日志' },
   schedule: { title: '调度', kicker: 'SCHEDULE', subtle: '定时与间隔规则仅在应用运行时生效' },
   settings: { title: '设置', kicker: 'PREFERENCES', subtle: '日志保留、快捷键与安全说明' },
 }
 
 const page = ref<PageId>('library')
+const libraryPane = ref<LibraryPane>('run')
 const pageMeta = computed(() => PAGE_META[page.value])
 
 const rows = ref<ScriptSummary[]>([])
@@ -46,6 +50,7 @@ const text = ref<string | null>(null)
 const originalText = ref<string | null>(null)
 const importDialog = ref<HTMLDialogElement>()
 const deleteDialog = ref<HTMLDialogElement>()
+const importMode = ref<'file' | 'folder'>('file')
 const sourcePath = ref('')
 const policy = ref<ConflictPolicy>('cancel')
 const busy = ref(false)
@@ -81,8 +86,20 @@ async function load(append = false) {
 }
 
 function fields(meta: ScriptMeta): ScriptFields {
-  const { name, description, enabled, dangerous, workingDir, params, tags } = toRaw(meta)
-  return structuredClone({ name, description, enabled, dangerous, workingDir, params, tags })
+  const {
+    name, description, enabled, dangerous, workingDir, params, tags, presets, defaultPresetId,
+  } = toRaw(meta)
+  return structuredClone({
+    name,
+    description,
+    enabled,
+    dangerous,
+    workingDir,
+    params: params ?? [],
+    tags,
+    presets: presets ?? [],
+    defaultPresetId: defaultPresetId ?? '',
+  })
 }
 
 async function open(id: string, reportSelection = true) {
@@ -94,26 +111,93 @@ async function open(id: string, reportSelection = true) {
   revision.value = detail.revision
   text.value = detail.text
   originalText.value = detail.text
+  libraryPane.value = 'run'
+}
+
+async function browseImportSource() {
+  error.value = ''
+  if (importMode.value === 'folder') {
+    const folder = await pickScriptFolder()
+    if (folder) sourcePath.value = folder
+    return
+  }
+  const files = await pickScriptFiles()
+  if (files.length === 1) sourcePath.value = files[0]
+  else if (files.length > 1) sourcePath.value = files.join(';')
 }
 
 async function importFile() {
-  const { meta } = await scripts.import(sourcePath.value.trim(), policy.value)
+  const policyValue = policy.value
+  if (importMode.value === 'folder') {
+    const dir = sourcePath.value.trim()
+    if (!dir) throw new Error('请选择脚本文件夹')
+    const result = await scripts.importDir(dir, policyValue)
+    if (!result.imported.length) {
+      const details = [...result.failed, ...result.skipped]
+        .map((item) => `${item.path}: ${item.message}`)
+        .join('\n')
+      throw new Error(details || '未导入任何脚本')
+    }
+    importDialog.value?.close()
+    await load()
+    await open(result.imported.at(-1)!.id)
+    const parts = [`已导入 ${result.imported.length} 个脚本`]
+    if (result.skipped.length) parts.push(`跳过 ${result.skipped.length}`)
+    if (result.failed.length) parts.push(`失败 ${result.failed.length}`)
+    notice.value = parts.join('，')
+    return
+  }
+
+  const paths = sourcePath.value
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!paths.length) throw new Error('请选择脚本文件')
+  let lastId = ''
+  let imported = 0
+  const failures: string[] = []
+  for (const path of paths) {
+    try {
+      const { meta } = await scripts.import(path, policyValue)
+      lastId = meta.id
+      imported++
+    } catch (failure) {
+      failures.push(`${path}: ${String(failure)}`)
+    }
+  }
+  if (!imported) throw new Error(failures.join('\n') || '未导入任何脚本')
   importDialog.value?.close()
   await load()
-  await open(meta.id)
-  notice.value = '已导入脚本'
+  if (lastId) await open(lastId)
+  notice.value = paths.length === 1 && imported === 1
+    ? '已导入脚本'
+    : `已导入 ${imported}/${paths.length} 个脚本`
+  if (failures.length) error.value = failures.join('\n')
+}
+
+function openImportDialog() {
+  importMode.value = 'file'
+  sourcePath.value = ''
+  policy.value = 'cancel'
+  error.value = ''
+  importDialog.value?.showModal()
 }
 
 async function saveMeta() {
   if (!current.value || !draft.value) return
   const id = current.value.id
-  const update = { ...draft.value, tags: tags.value.split(',').map((tag) => tag.trim()).filter(Boolean) }
+  const update = {
+    ...draft.value,
+    tags: tags.value.split(',').map((tag) => tag.trim()).filter(Boolean),
+    presets: draft.value.presets ?? [],
+    defaultPresetId: draft.value.defaultPresetId || undefined,
+  }
   await scripts.updateMeta(id, update)
   await load()
   const unsaved = text.value !== originalText.value ? text.value : undefined
   await open(id, false)
   if (unsaved !== undefined) text.value = unsaved
-  notice.value = '已保存元数据'
+  notice.value = '已保存脚本库配置'
 }
 
 async function saveContent() {
@@ -261,12 +345,7 @@ onUnmounted(() => {
         </div>
         <div v-if="page === 'library'" class="app-main-actions">
           <button type="button" :disabled="busy" @click="work(load)">刷新</button>
-          <button
-            type="button"
-            class="primary"
-            :disabled="busy"
-            @click="sourcePath = ''; policy = 'cancel'; importDialog?.showModal()"
-          >
+          <button type="button" class="primary" :disabled="busy" @click="openImportDialog">
             导入脚本
           </button>
         </div>
@@ -304,55 +383,92 @@ onUnmounted(() => {
             </aside>
 
             <div class="library-detail">
-              <section v-if="current && draft" class="panel" aria-label="脚本详情">
-                <header class="toolbar">
-                  <h2>{{ current.name }}</h2>
-                  <button type="button" class="danger" :disabled="busy" @click="deleteDialog?.showModal()">删除脚本</button>
-                </header>
-                <form @submit.prevent="work(saveMeta)">
-                  <div class="fields">
-                    <label>名称 <input v-model="draft.name" required /></label>
-                    <label>工作目录 <input v-model="draft.workingDir" /></label>
-                    <label>说明 <input v-model="draft.description" /></label>
-                    <label>标签（逗号分隔） <input v-model="tags" /></label>
-                  </div>
-                  <label class="check"><input v-model="draft.enabled" type="checkbox" /> 启用</label>
-                  <label class="check"><input v-model="draft.dangerous" type="checkbox" /> 标记为危险脚本</label>
-                  <ParamEditor v-model="draft.params" />
-                  <button class="primary" :disabled="busy" type="submit">保存元数据</button>
-                </form>
-                <fieldset v-if="current.params.some((param) => param.type === 'password')">
-                  <legend>密码参数</legend>
-                  <PasswordEditor
-                    v-for="param in current.params.filter((param) => param.type === 'password')"
-                    :key="current.id + ':' + param.key"
-                    :script-id="current.id"
-                    :param="param"
-                    :disabled="busy"
-                    @changed="passwordChanged"
-                  />
-                </fieldset>
-                <form @submit.prevent="work(saveContent)">
-                  <label v-if="text !== null">脚本正文
-                    <textarea v-model="text" rows="10" spellcheck="false"></textarea>
-                  </label>
-                  <p v-else>正文使用非 UTF-8 编码，本步保留原始文件。</p>
-                  <button v-if="text !== null" :disabled="busy || text === originalText" type="submit">保存正文</button>
-                </form>
-              </section>
+              <template v-if="current && draft">
+                <div class="library-pane-switch">
+                  <button type="button" :class="{ primary: libraryPane === 'run' }" @click="libraryPane = 'run'">运行台</button>
+                  <button type="button" :class="{ primary: libraryPane === 'config' }" @click="libraryPane = 'config'">脚本库配置</button>
+                </div>
+
+                <ExecutionPanel v-if="libraryPane === 'run'" :script="current" />
+
+                <section v-else class="panel" aria-label="脚本库配置">
+                  <header class="toolbar">
+                    <h2>{{ current.name }}</h2>
+                    <button type="button" class="danger" :disabled="busy" @click="deleteDialog?.showModal()">删除脚本</button>
+                  </header>
+                  <form @submit.prevent="work(saveMeta)">
+                    <div class="fields">
+                      <label>名称 <input v-model="draft.name" required /></label>
+                      <label>工作目录 <input v-model="draft.workingDir" /></label>
+                      <label>说明 <input v-model="draft.description" /></label>
+                      <label>标签（逗号分隔） <input v-model="tags" /></label>
+                    </div>
+                    <label class="check"><input v-model="draft.enabled" type="checkbox" /> 启用</label>
+                    <label class="check"><input v-model="draft.dangerous" type="checkbox" /> 标记为危险脚本</label>
+                    <ParamEditor v-model="draft.params" />
+                    <PresetEditor
+                      v-model="draft.presets!"
+                      v-model:default-preset-id="draft.defaultPresetId!"
+                      :params="draft.params"
+                      :disabled="busy"
+                    />
+                    <button class="primary" :disabled="busy" type="submit">保存配置</button>
+                  </form>
+                  <fieldset v-if="current.params.some((param) => param.type === 'password')">
+                    <legend>密码参数</legend>
+                    <PasswordEditor
+                      v-for="param in current.params.filter((param) => param.type === 'password')"
+                      :key="current.id + ':' + param.key"
+                      :script-id="current.id"
+                      :param="param"
+                      :disabled="busy"
+                      @changed="passwordChanged"
+                    />
+                  </fieldset>
+                  <form @submit.prevent="work(saveContent)">
+                    <label v-if="text !== null">脚本正文
+                      <textarea v-model="text" rows="10" spellcheck="false"></textarea>
+                    </label>
+                    <p v-else>正文使用非 UTF-8 编码，本步保留原始文件。</p>
+                    <button v-if="text !== null" :disabled="busy || text === originalText" type="submit">保存正文</button>
+                  </form>
+                </section>
+              </template>
               <section v-else class="panel" aria-label="脚本详情">
                 <p>选择脚本查看或编辑。</p>
               </section>
-              <ExecutionPanel v-if="current" :script="current" />
             </div>
           </div>
 
           <dialog ref="importDialog" @cancel.prevent="!busy && importDialog?.close()">
             <form @submit.prevent="work(importFile)">
               <h2>导入脚本</h2>
-              <label>源文件绝对路径 <input v-model="sourcePath" required placeholder="C:\scripts\example.bat" /></label>
+              <fieldset class="import-mode">
+                <legend>导入方式</legend>
+                <label class="check">
+                  <input v-model="importMode" type="radio" value="file" :disabled="busy" @change="sourcePath = ''" /> 选择文件
+                </label>
+                <label class="check">
+                  <input v-model="importMode" type="radio" value="folder" :disabled="busy" @change="sourcePath = ''" /> 绑定文件夹
+                </label>
+              </fieldset>
+              <label>
+                {{ importMode === 'folder' ? '文件夹绝对路径' : '源文件绝对路径' }}
+                <div class="path-row">
+                  <input
+                    v-model="sourcePath"
+                    required
+                    :placeholder="importMode === 'folder' ? 'C:\\scripts' : 'C:\\scripts\\example.bat'"
+                    :disabled="busy"
+                  />
+                  <button type="button" :disabled="busy" @click="work(browseImportSource)">浏览…</button>
+                </div>
+              </label>
+              <p v-if="importMode === 'folder'" class="hint">
+                将导入该文件夹下全部 `.bat` / `.sh` 文件（不含子文件夹）。
+              </p>
               <label>遇到同名脚本
-                <select v-model="policy">
+                <select v-model="policy" :disabled="busy">
                   <option value="cancel">取消导入</option>
                   <option value="rename">重命名新脚本</option>
                   <option value="overwrite">覆盖脚本及元数据</option>
@@ -361,7 +477,9 @@ onUnmounted(() => {
               <p v-if="error" class="error" role="alert">{{ error }}</p>
               <div class="toolbar">
                 <button type="button" :disabled="busy" @click="importDialog?.close(); error = ''">关闭</button>
-                <button class="primary" type="submit" :disabled="busy">导入</button>
+                <button class="primary" type="submit" :disabled="busy">
+                  {{ importMode === 'folder' ? '导入文件夹' : '导入' }}
+                </button>
               </div>
             </form>
           </dialog>
@@ -395,4 +513,10 @@ onUnmounted(() => {
 
 <style scoped>
 .onboarding-loading { max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+.library-pane-switch {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
 </style>

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { desktop } from '../api/desktop'
 import { execution } from '../api/execution'
+import { pickScriptFiles, pickScriptFolder } from '../api/dialog'
 import { scripts, type ConflictPolicy } from '../api/scripts'
 import type { EngineStatus } from '../engine'
 import DpapiNotice from './DpapiNotice.vue'
@@ -14,6 +15,7 @@ const busy = ref(false)
 const error = ref('')
 const bash = ref<Awaited<ReturnType<typeof execution.detectBash>>>()
 const bashPath = ref('')
+const importMode = ref<'file' | 'folder'>('file')
 const sourcePath = ref('')
 const conflictPolicy = ref<ConflictPolicy>('cancel')
 const imported = ref<{ id: string; name: string }>()
@@ -49,8 +51,25 @@ function saveBash() {
   })
 }
 
+async function browseImportSource() {
+  if (importMode.value === 'folder') {
+    const folder = await pickScriptFolder()
+    if (folder) sourcePath.value = folder
+    return
+  }
+  const files = await pickScriptFiles()
+  if (files[0]) sourcePath.value = files[0]
+}
+
 function importFirst() {
   void work(async () => {
+    if (importMode.value === 'folder') {
+      const result = await scripts.importDir(sourcePath.value.trim(), conflictPolicy.value)
+      const first = result.imported[0]
+      if (!first) throw new Error(result.failed[0]?.message || result.skipped[0]?.message || '未导入任何脚本')
+      imported.value = { id: first.id, name: `${first.name}${result.imported.length > 1 ? ` 等 ${result.imported.length} 个` : ''}` }
+      return
+    }
     const { meta } = await scripts.import(sourcePath.value.trim(), conflictPolicy.value)
     imported.value = { id: meta.id, name: meta.name }
   })
@@ -93,7 +112,23 @@ function finish() {
       <div v-else-if="step === 4">
         <p v-if="imported" role="status">已导入 {{ imported.name }}。可继续完成引导。</p>
         <form v-else @submit.prevent="importFirst">
-          <label>源文件绝对路径 <input v-model="sourcePath" required placeholder="C:\scripts\example.bat" :disabled="busy" /></label>
+          <fieldset class="import-mode">
+            <legend>导入方式</legend>
+            <label class="check"><input v-model="importMode" type="radio" value="file" :disabled="busy" /> 选择文件</label>
+            <label class="check"><input v-model="importMode" type="radio" value="folder" :disabled="busy" /> 绑定文件夹</label>
+          </fieldset>
+          <label>
+            {{ importMode === 'folder' ? '文件夹绝对路径' : '源文件绝对路径' }}
+            <div class="path-row">
+              <input
+                v-model="sourcePath"
+                required
+                :placeholder="importMode === 'folder' ? 'C:\\scripts' : 'C:\\scripts\\example.bat'"
+                :disabled="busy"
+              />
+              <button type="button" :disabled="busy" @click="work(browseImportSource)">浏览…</button>
+            </div>
+          </label>
           <label>遇到同名脚本
             <select v-model="conflictPolicy" :disabled="busy">
               <option value="cancel">取消导入</option>
@@ -101,7 +136,7 @@ function finish() {
               <option value="overwrite">覆盖脚本及元数据</option>
             </select>
           </label>
-          <div><button type="submit" :disabled="busy">导入脚本</button></div>
+          <div><button type="submit" :disabled="busy">{{ importMode === 'folder' ? '导入文件夹' : '导入脚本' }}</button></div>
         </form>
       </div>
       <p v-else>完成后进入脚本库。</p>
